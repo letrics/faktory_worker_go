@@ -15,7 +15,7 @@ You must install [Faktory](https://github.com/contribsys/faktory) first.
 Then:
 
 ```
-go get -u github.com/contribsys/faktory_worker_go
+go get -u github.com/letrics/faktory_worker_go
 ```
 
 # Usage
@@ -36,7 +36,7 @@ import (
   "context"
   "log"
 
-  worker "github.com/contribsys/faktory_worker_go"
+  worker "github.com/letrics/faktory_worker_go"
 )
 
 func someFunc(ctx context.Context, args ...interface{}) error {
@@ -81,7 +81,7 @@ import (
   "os/signal"
   "syscall"
 
-  worker "github.com/contribsys/faktory_worker_go"
+  worker "github.com/letrics/faktory_worker_go"
 )
 
 func someFunc(ctx context.Context, args ...interface{}) error {
@@ -150,7 +150,7 @@ func main() {
 ```go
 import (
 	faktory "github.com/contribsys/faktory/client"
-	worker "github.com/contribsys/faktory_worker_go"
+	worker "github.com/letrics/faktory_worker_go"
 )
 
 func Push(mgr worker.Manager, job *faktory.Job) error {
