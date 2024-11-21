@@ -322,21 +322,24 @@ func (mgr *Manager) handleEvent(sig string) string {
 	return ""
 }
 
-// process jobs from a specific queue
+// processQueue handles execution and completion
 func processQueue(ctx context.Context, mgr *Manager, queue string, idx int) {
-	// Copy of existing process() function but modified to work with single queue
 	defer mgr.shutdownWaiter.Done()
 	mgr.shutdownWaiter.Add(1)
 
 	for {
-		// Check if we should stop processing
 		select {
 		case <-mgr.done:
+			return
+		case <-ctx.Done():
 			return
 		default:
 		}
 
-		// Only fetch from the specified queue
+		if mgr.state != "" {
+			return
+		}
+
 		err := mgr.with(func(c *faktory.Client) error {
 			job, err := c.Fetch(queue)
 			if err != nil {
@@ -344,14 +347,39 @@ func processQueue(ctx context.Context, mgr *Manager, queue string, idx int) {
 			}
 
 			if job == nil {
+				time.Sleep(1 * time.Second)
 				return nil
 			}
 
-			return mgr.dispatch(ctx, job)
+			// Create job-specific context
+			jobCtx := ctx
+			if job.ReserveFor > 0 {
+				jobCtx, _ = context.WithTimeout(ctx, time.Duration(job.ReserveFor)*time.Second)
+			}
+
+			// Execute the job
+			err = mgr.dispatch(jobCtx, job)
+			if err != nil {
+				// Handle job failure
+				if job.Retry != nil && *job.Retry > 0 {
+					// Decrement retry count
+					newRetry := *job.Retry - 1
+					job.Retry = &newRetry
+
+					return c.Fail(job.Jid, err, nil)
+				}
+
+				// No more retries, mark as failed
+				return c.Fail(job.Jid, err, nil)
+			}
+
+			// Job completed successfully
+			return c.Ack(job.Jid)
 		})
 
 		if err != nil {
 			mgr.Logger.Error(err)
+			time.Sleep(1 * time.Second)
 		}
 	}
 }
