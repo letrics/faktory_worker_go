@@ -24,9 +24,10 @@ type Manager struct {
 	Pool            *faktory.Pool
 	ShutdownTimeout time.Duration
 
-	queues     []string
-	middleware []MiddlewareFunc
-	state      string // "", "quiet" or "terminate"
+	queues           []string
+	queueConcurrency map[string]int
+	middleware       []MiddlewareFunc
+	state            string // "", "quiet" or "terminate"
 	// The done channel will always block unless
 	// the system is shutting down.
 	done           chan interface{}
@@ -149,11 +150,12 @@ func NewManager() *Manager {
 		// hard 30 second timeout beforing KILLing the process.
 		ShutdownTimeout: 25 * time.Second,
 
-		state:          "",
-		queues:         []string{"default"},
-		done:           make(chan interface{}),
-		shutdownWaiter: &sync.WaitGroup{},
-		jobHandlers:    map[string]Handler{},
+		state:            "",
+		queues:           []string{"default"},
+		queueConcurrency: make(map[string]int),
+		done:             make(chan interface{}),
+		shutdownWaiter:   &sync.WaitGroup{},
+		jobHandlers:      map[string]Handler{},
 		eventHandlers: map[lifecycleEventType][]LifecycleEventHandler{
 			Startup:  {},
 			Quiet:    {},
@@ -217,8 +219,17 @@ func (mgr *Manager) boot(ctx context.Context) error {
 
 	mgr.Logger.Infof("faktory_worker_go %s PID %d now ready to process jobs", Version, os.Getpid())
 	mgr.Logger.Debugf("Using Faktory Client API %s", faktory.Version)
-	for i := 0; i < mgr.Concurrency; i++ {
-		go process(ctx, mgr, i)
+
+	// Launch workers for each queue based on configured concurrency
+	for _, queue := range mgr.queues {
+		concurrency := mgr.queueConcurrency[queue]
+		if concurrency == 0 {
+			concurrency = 1 // default to 1
+		}
+
+		for i := 0; i < concurrency; i++ {
+			go processQueue(ctx, mgr, queue, i)
+		}
 	}
 
 	return nil
@@ -253,6 +264,13 @@ func (mgr *Manager) ProcessWeightedPriorityQueues(queues map[string]int) {
 	mgr.queues = uniqueQueues
 	mgr.weightedQueues = weightedQueues
 	mgr.weightedPriorityQueuesEnabled = true
+}
+
+// Set per-queue concurrency
+func (mgr *Manager) SetQueueConcurrency(queue string, concurrency int) {
+	mgr.mut.Lock()
+	defer mgr.mut.Unlock()
+	mgr.queueConcurrency[queue] = concurrency
 }
 
 func (mgr *Manager) queueList() []string {
@@ -302,4 +320,38 @@ func (mgr *Manager) handleEvent(sig string) string {
 	}
 
 	return ""
+}
+
+// process jobs from a specific queue
+func processQueue(ctx context.Context, mgr *Manager, queue string, idx int) {
+	// Copy of existing process() function but modified to work with single queue
+	defer mgr.shutdownWaiter.Done()
+	mgr.shutdownWaiter.Add(1)
+
+	for {
+		// Check if we should stop processing
+		select {
+		case <-mgr.done:
+			return
+		default:
+		}
+
+		// Only fetch from the specified queue
+		err := mgr.with(func(c *faktory.Client) error {
+			job, err := c.Fetch(queue)
+			if err != nil {
+				return err
+			}
+
+			if job == nil {
+				return nil
+			}
+
+			return mgr.dispatch(ctx, job)
+		})
+
+		if err != nil {
+			mgr.Logger.Error(err)
+		}
+	}
 }
